@@ -7,8 +7,11 @@
 //
 import UIKit
 import SpriteKit
+import FBSDKLoginKit
 
 class GameViewController: UIViewController {
+    
+    static var loginButton: FBSDKLoginButton = FBSDKLoginButton()
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -16,17 +19,22 @@ class GameViewController: UIViewController {
         if let scene = MainScene(fileNamed:"MainScene") {
             // Configure the view.
             let skView = self.view as! SKView
-            skView.showsFPS = true
-            skView.showsNodeCount = true
+            skView.showsFPS = false
+            skView.showsNodeCount = false
+            skView.showsPhysics = false
             
             /* Sprite Kit applies additional optimizations to improve rendering performance */
             skView.ignoresSiblingOrder = true
             
             /* Set the scale mode to scale to fit the window */
-            scene.scaleMode = .AspectFill
+            scene.scaleMode = .AspectFit
             
             skView.presentScene(scene)
         }
+        
+        GameViewController.loginButton.center.x = self.view.center.x
+        GameViewController.loginButton.center.y = self.view.center.y + CGFloat(300)
+        self.view!.addSubview(GameViewController.loginButton)
     }
     
     override func shouldAutorotate() -> Bool {

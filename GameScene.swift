@@ -8,6 +8,19 @@
 
 import SpriteKit
 import AudioToolbox
+import Firebase
+import FirebaseDatabase
+import FBSDKCoreKit
+import FBSDKShareKit
+import FBSDKLoginKit
+import AVFoundation
+
+/* Social profile structure */
+struct Profile {
+    var name = ""
+    var facebookId = ""
+    var score = 0
+}
 
 enum GameState {
     case Active, GameOver, Pause
@@ -17,14 +30,22 @@ enum Size {
     case Fat, Skinny
 }
 
+var tutorialCounter = 0
+
 class GameScene: SKScene, SKPhysicsContactDelegate  {
     
+    var playerProfile = Profile()
+    /* Firebase connection */
+    var firebaseRef = FIRDatabase.database().referenceWithPath("/bestScore")
+    
     let fixedDelta: CFTimeInterval = 1.0/60.0 /* 60 FPS */
+    
     let scrollSpeed: CGFloat = 160
     var scrollLayer: SKNode!
     var scrollCloud: SKNode!
     var obstacleLayer: SKNode!
     var timer: CFTimeInterval = 0
+    var tutorialTimer: CFTimeInterval = 0
     var spawnTimer: CFTimeInterval = 0
     var foodTimer: CFTimeInterval = 0
     var coinTimer: CFTimeInterval = 0
@@ -40,21 +61,64 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
     var pauseButton: MSButtonNode!
     var continueButton: MSButtonNode!
     var homeButton: MSButtonNode!
-    var sizeState: Size!
+    var sizeState: Size = .Skinny
     var heroScale: CGFloat!
     var level = 0
     var pointsLabel: SKLabelNode!
     var points: Int = 0
     var bestLabel: SKLabelNode!
     var mass: CGFloat!
-    var font: UIFont!
     var swipeBegins: CGPoint!
     var swipeEnds: CGPoint!
+    var highScore: Bool = false
+    var tap: SKSpriteNode!
+    var swipe: SKSpriteNode!
+    var font: UIFont!
+    var font2: UIFont!
+    var font3: UIFont!
+    var tipsLabel: SKSpriteNode!
+    var tipsLabel2: SKSpriteNode!
+    var pausedForTapTutorial = false
+    var pausedForSwipeTutorial = false
+    var backgroundAudio: AVAudioPlayer!
+    var touchedFirstBee = 0
+    var touchedSecBee = 0
+
+    static var stayPaused = false as Bool
+    
+    override var paused: Bool {
+        get {
+            return super.paused
+        }
+        set {
+            if (newValue || !GameScene.stayPaused) {
+                super.paused = newValue
+            } else if GameScene.stayPaused && replayButton != nil {
+                replayButton.hidden = false
+                continueButton.hidden = false
+                replayButton.hidden = false
+                homeButton.hidden = false
+                pauseButton.hidden = true
+            }
+            
+            GameScene.stayPaused = false
+        }
+    }
     
     override func didMoveToView(view: SKView) {
-        /* Setup your scene here */
+        GameViewController.loginButton.hidden = true
+        do {
+            try backgroundAudio = AVAudioPlayer(contentsOfURL: NSURL(fileURLWithPath:NSBundle.mainBundle().pathForResource("Happy Tune",ofType:"wav")!))
+                backgroundAudio.numberOfLoops = -1
+        }
+        catch {
+            
+        }
         
+        /* Setup your scene here */
         font = UIFont(name: "Noteworthy", size: 26)
+        font2 = UIFont(name: "Noteworthy", size: 18)
+        font3 = UIFont(name: "Noteworthy", size: 26)
         scrollLayer = self.childNodeWithName("scrollLayer")
         obstacleLayer = self.childNodeWithName("obstacleLayer")
         scrollCloud = self.childNodeWithName("scrollCloud")
@@ -67,23 +131,27 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         continueButton = self.childNodeWithName("continueButton") as! MSButtonNode
         homeButton = self.childNodeWithName("homeButton") as! MSButtonNode
         pointsLabel = self.childNodeWithName("pointsLabel") as! SKLabelNode
-        heroScale = hero.xScale
+        heroScale = hero2.xScale
         pointsLabel.text = String(points)
         bestLabel = self.childNodeWithName("bestLabel") as! SKLabelNode
         bestLabel.text = String(NSUserDefaults.standardUserDefaults().integerForKey("bestLabel"))
         mass = hero.physicsBody?.mass
+        swipe = self.childNodeWithName("swipe") as! SKSpriteNode
+        tap = self.childNodeWithName("tap") as! SKSpriteNode
         
+        self.view?.multipleTouchEnabled = false
+        
+        self.tap.hidden = true
+        self.swipe.hidden = true
         self.replayButton.hidden = true
         self.continueButton.hidden = true
         self.replayButton.hidden = true
         self.homeButton.hidden = true
         self.pauseButton.hidden = false
         
-        if heroScale == hero.xScale {
-            sizeState = .Skinny
-        }
-        
         homeButton.selectedHandler = {
+            home = true
+            
             /* Grab reference to our SpriteKit view */
             let skView = self.view as SKView!
             
@@ -95,7 +163,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             
             /* Show debug */
             skView.showsPhysics = false
-            skView.showsDrawCount = true
+            skView.showsDrawCount = false
             skView.showsFPS = false
             
             /* Restart game scene */
@@ -116,18 +184,27 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             
             /* Show debug */
             skView.showsPhysics = false
-            skView.showsDrawCount = true
+            skView.showsDrawCount = false
             skView.showsFPS = false
             
             /* Restart game scene */
+            scene.playerProfile = self.playerProfile
             skView.presentScene(scene)
         }
         
         pauseButton.selectedHandler = {
+            self.gameState = .Pause
+            self.backgroundAudio.pause()
+            if self.tipsLabel.hidden == false || self.tipsLabel2.hidden == false {
+                self.tipsLabel.hidden = true
+                self.tipsLabel2.hidden = true
+            }
             self.pauseButton.hidden = true
             self.continueButton.hidden = false
             self.replayButton.hidden = false
             self.homeButton.hidden = false
+            self.tap.hidden = true
+            self.swipe.hidden = true
             self.gameState = .Pause
             self.paused = true
             self.physicsWorld.speed = 0
@@ -141,18 +218,18 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             self.continueButton.hidden = true
             self.paused = false
             self.physicsWorld.speed = 1
+            self.backgroundAudio.play()
         }
         
         let colorChange = SKAction.colorizeWithColor(.blueColor(), colorBlendFactor: 1, duration: 5)
-        let colorChange1 = SKAction.colorizeWithColor(.orangeColor(), colorBlendFactor: 1, duration: 5)
-        let colorChange2 = SKAction.colorizeWithColor(.grayColor(), colorBlendFactor: 1, duration: 5)
+        let colorChange1 = SKAction.colorizeWithColor(.redColor(), colorBlendFactor: 1, duration: 5)
+        let colorChange2 = SKAction.colorizeWithColor(.yellowColor(), colorBlendFactor: 1, duration: 5)
         let action = SKAction.repeatActionForever(SKAction.sequence([colorChange, colorChange1, colorChange2]))
-        wallpaper.runAction(action)
+        self.wallpaper.runAction(action)
         
         
         /* Set physics contact delegate */
         physicsWorld.contactDelegate = self
-        
         
         let swipeRight:UISwipeGestureRecognizer = UISwipeGestureRecognizer(target: self, action: #selector(GameScene.respondToSwipe(_:)))
         swipeRight.direction = .Right
@@ -163,19 +240,66 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         swipeLeft.direction = .Left
         view.addGestureRecognizer(swipeLeft)
         
-        let swipeUp:UISwipeGestureRecognizer = UISwipeGestureRecognizer(target: self, action: #selector(GameScene.respondToSwipe(_:)))
-        swipeUp.direction = .Up
-        view.addGestureRecognizer(swipeUp)
-
-
+        let swipeDown:UISwipeGestureRecognizer = UISwipeGestureRecognizer(target: self, action: #selector(GameScene.respondToSwipe(_:)))
+        swipeDown.direction = .Down
+        view.addGestureRecognizer(swipeDown)
+        
+        tipsLabel = self.childNodeWithName("tipsLabel") as! SKSpriteNode
+        tipsLabel.hidden = true
+        tipsLabel2 = self.childNodeWithName("tipsLabel2") as! SKSpriteNode
+        tipsLabel2.hidden = true
+        
+        if tutorialCounter == 0 {
+            
+            if gameState == .Pause || gameState == .Active {
+                tipsLabel.runAction(SKAction.sequence([
+                    SKAction.waitForDuration(5),
+                    SKAction.unhide(),
+                    SKAction.waitForDuration(5),
+                    SKAction.removeFromParent()
+                    ]))
+                
+                tipsLabel2.runAction(SKAction.sequence([
+                    SKAction.waitForDuration(10),
+                    SKAction.unhide(),
+                    SKAction.waitForDuration(5),
+                    SKAction.removeFromParent()
+                    ]))
+                
+                self.runAction(SKAction.sequence([
+                    SKAction.waitForDuration(1),
+                    SKAction.runBlock({
+                        self.paused = true
+                        self.tap.hidden = false
+                        self.pausedForTapTutorial = true
+                    })
+                ]))
+                
+                self.runAction(SKAction.sequence([
+                    SKAction.waitForDuration(5.0),
+                    SKAction.runBlock({
+                        self.paused = true
+                        self.swipe.hidden = false
+                        self.pausedForSwipeTutorial = true
+                    })
+                ]))
+            }
+        }
+        
     }
     
     override func touchesEnded(touches: Set<UITouch>, withEvent event: UIEvent?) {
         /* Called when a touch ended */
+        if self.paused && self.pausedForTapTutorial {
+            self.paused = false
+            self.tap.hidden = true
+            self.pausedForTapTutorial = false
+        }
         
         touchCounter += 1
         
         if touchCounter <= 2 {
+            self.runAction(SKAction.playSoundFileNamed("Jump", waitForCompletion: false))
             hero2.runAction(SKAction(named: "jump")!)
             
             /* Reset velocity, helps improve response against cumulative falling velocity */
@@ -186,8 +310,6 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             /* Apply vertical impulse */
             hero.physicsBody?.applyImpulse(CGVectorMake(0, 600))
             
-         //   hero.physicsBody?.velocity = CGVector(dx: hero.physicsBody!.velocity.dx, dy: 5000.0)
-            
             
             /* Apply subtle rotation */
             hero.physicsBody?.applyAngularImpulse(1)
@@ -196,23 +318,38 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
 
    
     override func update(currentTime: CFTimeInterval) {
+  
         /* Called before each frame is rendered */
+        if gameState == .GameOver || gameState == .Pause {
+            backgroundAudio.pause()
+        } else {
+            backgroundAudio.play()
+        }
         
         if hero.position.x >= 200 {
             hero.position.x = 200
         }
-        
+    
         if hero.position.y < 40 || hero.position.x < -self.size.width {
             gameOver()
         }
         
-        if sizeState == .Fat {
+        if sizeState == .Fat  {
             hero.physicsBody?.applyForce(CGVector(dx: -25, dy: 0))
+        } else {
+            hero.physicsBody?.applyForce(CGVector(dx: 0, dy: 0))
         }
         
-        if hero.xScale <= heroScale {
-            hero.xScale = heroScale
+        if hero2.xScale <= heroScale {
+            hero.physicsBody?.mass = mass
+            hero2.xScale = heroScale
             sizeState = .Skinny
+        } else {
+            sizeState = .Fat
+        }
+        
+        if hero2.xScale >= heroScale * 2 {
+            hero2.xScale = heroScale * 2
         }
         
         /* Grab current velocity */
@@ -224,10 +361,14 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         }
         
         /* Called before each frame is rendered */
+        evilBee.position.x = beeAttackBunny(hero.position.x)
+        
         scrollWorld()
         updateObstacles()
         
         timer += fixedDelta
+        
+        tutorialTimer += fixedDelta
         
         secondBeeTimer += fixedDelta
         
@@ -238,6 +379,17 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         foodTimer += fixedDelta
         
         spawnTimer += fixedDelta
+    }
+    
+    func beeAttackBunny(position: CGFloat) -> CGFloat {
+        let x = position / 200.0
+        
+        let a: CGFloat = 25.0
+        let b: CGFloat = -25.0
+        
+        let result = a + ((b - a) * x)
+        
+        return result
     }
     
     func scrollWorld(){
@@ -255,8 +407,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
                 }
             }
             
-            let resourcePath = NSBundle.mainBundle().pathForResource("Level\((level % 3) + 1)", ofType: "sks")
-            print(level)
+            let resourcePath = NSBundle.mainBundle().pathForResource("Level\((level % 4) + 1)", ofType: "sks")
             let levelFirst = SKReferenceNode (URL: NSURL (fileURLWithPath: resourcePath!))
             
             let offset = self.convertPoint(CGPoint(x: self.size.width * 1.5 + 40, y: 0), toNode: scrollLayer).x
@@ -285,6 +436,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
                 }
                 
             } else if ground.name == "backgroundOld" {
+                
                 let groundSprite = ground as! SKSpriteNode
                 
                 /* Get ground node position, convert node position to scene space*/
@@ -309,13 +461,8 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             let cloudPosition = scrollCloud.convertPoint(cloud.position, toNode: self)
             
             /* Check if ground sprite has left the scene */
-            if cloudPosition.x <= -cloud.size.width / 2 {
-                
-                /* Reposition ground sprite to the second starting position */
-                let newPosition = CGPointMake((self.size.width / 2) + self.size.width, cloudPosition.y)
-                
-                /* Convert new node position back to scroll layer space */
-                cloud.position = self.convertPoint(newPosition, toNode: scrollCloud)
+            if cloudPosition.x < -cloud.size.width / 2 {
+                cloud.position.x += cloud.size.width * 2
             }
         }
         
@@ -392,7 +539,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             if let collisionNode = collision?.node {
                 let coins = SKSpriteNode(imageNamed: "coin_gold")
                 coins.name = "coins"
-                let coin = SKPhysicsBody (texture: coins.texture!, size: coins.size)
+                let coin = SKPhysicsBody (texture: coins.texture!, size: CGSize(width: 55,height: 55))
                 coins.physicsBody = coin
                 coins.physicsBody!.affectedByGravity = true
                 coins.physicsBody!.allowsRotation = false
@@ -439,7 +586,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         /* Time to add new obstacle */
         if hero.position.x >= self.size.width / 2{
             
-            if spawnTimer >= 0.5 {
+            if spawnTimer >= 0.8 {
             
                 let topRight = CGPointMake(self.size.width, self.size.height)
                 let bottomRight = CGPointMake(self.size.width, 0)
@@ -462,7 +609,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
                 
                 let topRight2 = CGPointMake(self.size.width, self.size.height)
                 let bottomRight2 = CGPointMake(self.size.width, 0)
-                let collision2 = self.physicsWorld.bodyAlongRayStart(topRight2, end: bottomRight)
+                let collision2 = self.physicsWorld.bodyAlongRayStart(topRight2, end: bottomRight2)
                 
                 if let collisionNode2 = collision2?.node {
                     
@@ -493,19 +640,25 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         guard let nodeA = contactA.node, nodeB = contactB.node else {
             return
         }
-  
         //carrot disappears when it touches bunny
         if (nodeA.name == "bunny" && nodeB.name == "carrot") || (nodeA.name == "carrot" && nodeB.name == "bunny")  {
+            hero2.removeActionForKey("Growing")
             hero.physicsBody!.velocity.dx = (scrollSpeed / 2)
-            if hero.physicsBody?.mass <= mass {
-                hero.physicsBody?.mass = mass
-            } else {
-                hero.physicsBody?.mass -= ((hero.physicsBody?.mass)! / 4)
+            self.runAction(SKAction.playSoundFileNamed("Chomp", waitForCompletion: false))
+            if sizeState != .Skinny || hero.physicsBody?.mass > mass {
+                hero2.runAction(SKAction.sequence([
+                    SKAction.scaleXTo(hero2.xScale - heroScale / 4, duration: 0.15),
+                    SKAction.scaleXTo(hero2.xScale, duration: 0.15),
+                    SKAction.scaleXTo(hero2.xScale - heroScale / 4, duration: 0),
+                    ]), withKey: "Growing")
+
+                
+                hero.physicsBody?.mass -= mass / 4
             }
             if gameState != .GameOver {
                 points += 1
                 pointsLabel.text = String(points)
-                let scoreLabel = SKLabelNode(fontNamed: font.fontName)
+                let scoreLabel = SKLabelNode(fontNamed: font3.fontName)
                 scoreLabel.fontSize = 26
                 scoreLabel.color = SKColor.blackColor()
                 scoreLabel.position = hero.convertPoint(CGPoint(x:0, y: 10), toNode: scrollLayer)
@@ -519,19 +672,23 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
                 
                 if points > Int(bestLabel.text!) {
                     bestLabel.text = String(points)
+                    
+                    if highScore == false {
+                        highScore = true
+                        let newHS = SKSpriteNode(imageNamed: "newhighscore")
+                        newHS.setScale(0.5)
+                        newHS.position = hero.convertPoint(CGPoint(x:0, y: 20), toNode: scrollLayer)
+                        scrollLayer.addChild(newHS)
+                        newHS.runAction(SKAction.fadeOutWithDuration(1))
+                        newHS.runAction(SKAction.sequence([
+                            SKAction.moveByX(0, y: 50, duration: 1),
+                            SKAction.removeFromParent()
+                            ]))
+                    }
                 }
                 
-                if points > NSUserDefaults.standardUserDefaults().integerForKey("bestLabel") {
-                    NSUserDefaults.standardUserDefaults().setInteger(points, forKey: "bestLabel")
-                    NSUserDefaults.standardUserDefaults().synchronize()
-                }
-                
-                bestLabel.text = String(NSUserDefaults.standardUserDefaults().integerForKey("bestLabel"))
             }
             
-            if sizeState != .Skinny {
-                hero.xScale -= heroScale
-            }
             if nodeA.name == "carrot" {
                 nodeA.removeFromParent()
             } else {
@@ -539,13 +696,14 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             }
             
         }
+        
        
         //coins disappears when it touches bunny
         if (nodeA.name == "bunny" && nodeB.name == "coins") || (nodeA.name == "coins" && nodeB.name == "bunny") {
             if gameState != .GameOver {
                 points += 2
                 pointsLabel.text = String(points)
-                let scoreLabel = SKLabelNode(fontNamed: font.fontName)
+                let scoreLabel = SKLabelNode(fontNamed: font3.fontName)
                 scoreLabel.fontSize = 26
                 scoreLabel.color = SKColor.blackColor()
                 scoreLabel.position = hero.convertPoint(CGPoint(x:0, y: 10), toNode: scrollLayer)
@@ -553,20 +711,28 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
                 scoreLabel.text = "+2"
                 scoreLabel.runAction(SKAction.fadeOutWithDuration(1))
                 scoreLabel.runAction(SKAction.sequence([
+                    SKAction.playSoundFileNamed("Power Up", waitForCompletion: false),
                     SKAction.moveByX(0, y: 30, duration: 1),
                     SKAction.removeFromParent()
                     ]))
                 
                 if points > Int(bestLabel.text!) {
                     bestLabel.text = String(points)
+                    
+                    if highScore == false {
+                        highScore = true
+                        let newHS = SKSpriteNode(imageNamed: "newhighscore")
+                        newHS.setScale(0.5)
+                        newHS.position = hero.convertPoint(CGPoint(x:0, y: 20), toNode: scrollLayer)
+                        scrollLayer.addChild(newHS)
+                        newHS.runAction(SKAction.fadeOutWithDuration(1))
+                        newHS.runAction(SKAction.sequence([
+                            SKAction.moveByX(0, y: 50, duration: 1),
+                            SKAction.removeFromParent()
+                            ]))
+                    }
                 }
                 
-                if points > NSUserDefaults.standardUserDefaults().integerForKey("bestLabel") {
-                    NSUserDefaults.standardUserDefaults().setInteger(points, forKey: "bestLabel")
-                    NSUserDefaults.standardUserDefaults().synchronize()
-                }
-                
-                bestLabel.text = String(NSUserDefaults.standardUserDefaults().integerForKey("bestLabel"))
             }
             
             if nodeA.name == "coins" {
@@ -577,27 +743,47 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
         }
         
         if (nodeA.name == "bunny" && nodeB.name == "evilBee") || (nodeA.name == "evilBee" && nodeB.name == "bunny") {
-            hero2.runAction(SKAction(named: "hurt")!)
-            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
-            death()
-            hero2.runAction(SKAction(named: "hurt")!)
-            
+            if touchedFirstBee == 0 {
+                touchedFirstBee = 1
+//                AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+                hero2.runAction(SKAction.sequence([
+                    SKAction.playSoundFileNamed("Game Over", waitForCompletion: false),
+                    SKAction(named: "hurt")!,
+                    SKAction(named: "jump")!,
+                    SKAction(named: "hurt")!,
+                ]))
+                death()
+            }
         }
         
         if (nodeA.name == "bunny" && nodeB.name == "secondBee") || (nodeA.name == "secondBee" && nodeB.name == "bunny") {
-            hero2.runAction(SKAction(named: "hurt")!)
-            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
-            death()
-            hero2.runAction(SKAction(named: "hurt")!)
-            
+            if touchedSecBee == 0 {
+                touchedSecBee = 1
+//                AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+                hero2.runAction(SKAction.sequence([
+                    SKAction.playSoundFileNamed("Game Over", waitForCompletion: false),
+                    SKAction(named: "hurt")!,
+                    SKAction(named: "jump")!,
+                    SKAction(named: "hurt")!,
+                    ]))
+                death()
+            }
         }
         
         //fries disappears when it touches bunny
         if (nodeA.name == "bunny" && nodeB.name == "fries") || (nodeA.name == "fries" && nodeB.name == "bunny") {
-            hero.runAction(SKAction(named: "hurt")!)
-            hero.xScale += heroScale / 4
+            hero2.removeActionForKey("Growing")
+            hero2.runAction(SKAction.sequence([
+                SKAction.playSoundFileNamed("Growing", waitForCompletion: false),
+                SKAction(named: "hurt")!,
+                SKAction.scaleXTo(hero2.xScale + heroScale / 4, duration: 0.15),
+                SKAction.scaleXTo(hero2.xScale, duration: 0.15),
+                SKAction.scaleXTo(hero2.xScale + heroScale / 4, duration: 0),
+                ]), withKey: "Growing")
             sizeState = .Fat
-            hero.physicsBody?.mass += ((hero.physicsBody?.mass)! / 4)
+            if hero.physicsBody?.mass <= mass * 2 {
+                hero.physicsBody?.mass += mass / 4
+            }
             if nodeA.name == "fries" {
                 nodeA.removeFromParent()
             } else {
@@ -638,32 +824,105 @@ class GameScene: SKScene, SKPhysicsContactDelegate  {
             self.touchCounter = 5
             
         })
-        
         hero2.runAction(heroDeath)
     }
     
     func respondToSwipe(sender: UISwipeGestureRecognizer) {
-        if let swipeGesture = sender as? UISwipeGestureRecognizer {
-            switch swipeGesture.direction {
-            case UISwipeGestureRecognizerDirection.Left:
-                hero.physicsBody!.velocity.dx = -(scrollSpeed * 1)
-                
-            case UISwipeGestureRecognizerDirection.Right:
-                hero.physicsBody!.velocity.dx = (scrollSpeed * 1)
-
-            default:
-                break
+        if self.paused && self.pausedForSwipeTutorial {
+            self.paused = false
+            self.swipe.hidden = true
+            self.pausedForSwipeTutorial = false
+            tutorialCounter = 1
+        }
+        if gameState == .Active {
+            if let swipeGesture = sender as? UISwipeGestureRecognizer {
+                switch swipeGesture.direction {
+                case UISwipeGestureRecognizerDirection.Left:
+                    hero.physicsBody!.velocity.dx = -(scrollSpeed * 1.25)
+                    let wind = SKSpriteNode(imageNamed: "wind")
+                    wind.setScale(0.3)
+                    wind.position = hero.convertPoint(CGPoint(x: 100, y: -20), toNode: scrollLayer)
+                    scrollLayer.addChild(wind)
+                    wind.runAction(SKAction.moveByX(-30, y: 0, duration: 1))
+                    wind.runAction(SKAction.sequence([
+                        SKAction.fadeOutWithDuration(1),
+                        SKAction.removeFromParent()
+                        ]))
+                    
+                case UISwipeGestureRecognizerDirection.Right:
+                    hero.physicsBody!.velocity.dx = (scrollSpeed * 1.25)
+                    let wind = SKSpriteNode(imageNamed: "wind")
+                    wind.setScale(0.3)
+                    wind.xScale = wind.xScale * -1
+                    wind.position = hero.convertPoint(CGPoint(x: -100, y: -20), toNode: scrollLayer)
+                    scrollLayer.addChild(wind)
+                    wind.runAction(SKAction.moveByX(30, y: 0, duration: 1))
+                    wind.runAction(SKAction.sequence([
+                        SKAction.fadeOutWithDuration(1),
+                        SKAction.removeFromParent()
+                        ]))
+                    
+                    
+                case UISwipeGestureRecognizerDirection.Down:
+                    hero.physicsBody!.applyImpulse(CGVectorMake(0, -50))
+                    
+                default:
+                    break
+                }
             }
         }
     }
     
-    
     func gameOver() {
+        var tempPosition = continueButton.position
         gameState = .GameOver
+        self.tap.hidden = true
+        self.swipe.hidden = true
+        self.tipsLabel.hidden = true
+        self.tipsLabel2.hidden = true
+        self.continueButton.state = .hidden
+        homeButton.position.y = replayButton.position.y + 30
         homeButton.hidden = false
+        replayButton.position.y = tempPosition.y + 30
         replayButton.hidden = false
         pauseButton.hidden = true
-        self.paused = true
+        self.runAction(SKAction.runBlock({ 
+            SKAction.playSoundFileNamed("Game Over", waitForCompletion: false)
+            SKAction.waitForDuration(5)
+            self.paused = true
+            self.backgroundAudio.pause()
+        }))
+        
+        /* Check for new high score and has a facebook user id */
+        
+        if points > NSUserDefaults.standardUserDefaults().integerForKey("bestLabel") {
+            NSUserDefaults.standardUserDefaults().setInteger(points, forKey: "bestLabel")
+            NSUserDefaults.standardUserDefaults().synchronize()
+            
+           // print(playerProfile)
+            if !playerProfile.facebookId.isEmpty {
+                
+                //* Update profile score */
+                playerProfile.score = points
+                
+                /* Build data structure to be saved to firebase */
+                let saveProfile = [playerProfile.name :
+                    ["score" : playerProfile.score,
+                        "id" : playerProfile.facebookId ]]
+                
+                /* Save to Firebase */
+                firebaseRef.updateChildValues(saveProfile, withCompletionBlock: {
+                    (error:NSError?, ref:FIRDatabaseReference!) in
+                    if (error != nil) {
+                        print("Data save failed: ",error)
+                    } else {
+                        print("Data saved success")
+                    }
+                })
+                
+            }
+            
+        }
     }
     
 }
